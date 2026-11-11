@@ -6,12 +6,17 @@ import data from "gulp-data";
 import cached from "gulp-cached";
 import fs from "fs";
 import del from "del";
-import ws from "gulp-webserver";
+import http from "http";
+import connect from "connect";
+import serveStatic from "serve-static";
+import connectLivereload from "connect-livereload";
+import tinyLr from "tiny-lr";
+import open from "open";
 import path from "path";
 import gulpSass from "gulp-sass";
-import dartSass from "dart-sass";
+import dartSass from "sass";
 import sourcemaps from "gulp-sourcemaps";
-import minificss from "gulp-minify-css";
+import cleanCSS from "gulp-clean-css";
 import autoprefixer from "autoprefixer";
 import postCss from "gulp-postcss";
 import rename from "gulp-rename";
@@ -113,7 +118,7 @@ const css = () => {
     path_src.css + '/**/*.scss',                          // 컴파일 대상 scss파일 찾기
     { since: gulp.lastRun(css) }                          // 변경된 파일에 대해서만 컴파일 진행
   )
-  .pipe( plumber({errorHandler:onErrorHandler}) )         // 에러 발생 시 gulp종료 방지 및 에러 핸들링
+  .pipe( plumber({errorHandler:onErrorHandler}) )         // 에러 발생 시 gulp 종료 방지 및 에러 핸들링
   // *.css 생성
   .pipe( dependents() )                                   // 현재 스트림에 있는 파일에 종속되는 모든 파일을 추가
   .pipe( sourcemaps.init() )                              // 소스맵 작성
@@ -122,7 +127,7 @@ const css = () => {
   .pipe( sourcemaps.write() )                             // 소스맵 적용
   .pipe( gulp.dest(path_dist.css) )                       // 컴파일 후 css파일이 생성될 목적지 설정
   // *.min.css 생성
-  .pipe( minificss() )                                    // 컴파일된 css 압축
+  .pipe( cleanCSS() )                                    // 컴파일된 css 압축
   .pipe( rename({ suffix: '.min' }) )                     // 압축파일 *.min.css 생성
   .pipe( sourcemaps.write() )                             // 소스맵 적용
   .pipe( gulp.dest(path_dist.css) );                      // 컴파일 후 css파일이 생성될 목적지 설정
@@ -131,21 +136,21 @@ const css = () => {
 // js task
 const js = () => {
   return gulp.src([
-    path_src.js + '/main.js'                                  // 트렌스파일 대상 경로 (util.js 는 main.js 에 import 하기 때문에 호출 안함)
+    path_src.js + '/main.js'                                  // 트랜스파일 대상 경로 (util.js는 main.js에 import 하기 때문에 호출 안함)
   ])
   .pipe( sourcemaps.init({ loadMaps: true }) )                // 소스맵 초기화 (기존의 소스 맵을 유지하고 수정하는 데 사용하기 위해 옵션 설정)
-  .pipe( bro({                                                // 트렌스파일 시작
+  .pipe( bro({                                                // 트랜스파일 시작
     transform: [
       babelify.configure({ presets: ['@babel/preset-env'] }), // ES6 이상의 문법을 일반 브라우저가 코드를 이해할 수 있도록 변환
       [ 'uglifyify', { global: true } ]                       // 코드 최소화 및 난독화
     ]
   }) )
   .pipe( sourcemaps.write('./') )                             // 소스맵 작성
-  .pipe(minify({                                              // 트렌스파일된 코드 압축 및 min 파일 생성
+  .pipe(minify({                                              // 트랜스파일된 코드 압축 및 min 파일 생성
     ext: { min: '.min.js' },                                  // 축소된 파일을 출력하는 파일 이름의 접미사 설정
     ignoreFiles: ['-min.js']                                  // 해당 패턴과 일치하는 파일을 축소하지 않음
   }))
-  .pipe( gulp.dest(path_dist.js) );                           // 트렌스파일 후 생성될 목적지 설정
+  .pipe( gulp.dest(path_dist.js) );                           // 트랜스파일 후 생성될 목적지 설정
 }
 
 // image task
@@ -161,15 +166,27 @@ const clean = () => del([dist]);                       // dist 폴더 삭제
 const cleanDeploy = () => del([".publish"]);           // 배포 후 자동 생성된 .publish 폴더 삭제
 
 // webserver task
-const webserver = () => {
-  return gulp.src(dist)                                // webserver를 실행 할 폴더 경로
-  .pipe(
-    ws({                                               // webserver 옵션 설정
-      // port: 8000,                                   // 기본 8000, 필요 시 변경 가능
-      livereload: true,                                // 작업 중 파일 저장 시 브라우저 자동 새로고침 (기본 false)
-      open: true                                       // Gulp 실행 시 자동으로 브라우저를 띄우고 localhost 서버 열기 (기본 false)
-    })
-  );
+const DEV_PORT = 8080;
+const LR_PORT = 35729;
+const webserver = (done) => {
+  const lr = tinyLr();
+  lr.listen(LR_PORT);
+
+  const app = connect();
+  app.use(connectLivereload({ port: LR_PORT }));
+  app.use(serveStatic(dist));
+
+  // dist 변경 시 브라우저 Live Reload
+  gulp.watch(dist + "/**/*").on("change", (filePath) => {
+    lr.changed({ body: { files: [filePath] } });
+  });
+
+  http.createServer(app).listen(DEV_PORT, () => {
+    const url = `http://localhost:${DEV_PORT}/`;
+    console.log(`Webserver started at ${url}`);
+    open(url);
+    done();
+  });
 }
 
 // watch task
@@ -255,6 +272,6 @@ export const build = gulp.series([ prepare, assets ]);
 // gulp dev 실행 (build 실행 후 live 실행) - build 실행 후 live 실행
 export const dev = gulp.series([ build, live ]);
 
-// gulp deploy 실행 (현재 dist 폴더를 배포할 경우 첫째 줄 사용, src를 한 번 더 빌드 하여 배포할 경우 둘째 줄 사용)
+// gulp deploy 실행 (현재 dist 폴더를 배포할 경우 첫째 줄 사용, src를 한 번 더 빌드하여 배포할 경우 둘째 줄 사용)
 export const deploy = gulp.series([ gh, cleanDeploy ]);
-//export const deploy = gulp.series([ build, gh, cleanDeploy ]);
+// export const deploy = gulp.series([ build, gh, cleanDeploy ]);
